@@ -3,6 +3,9 @@ version: 1.0.0
 config-version: 2
 profile: data_reliability_lab
 
+flags:
+  require_explicit_package_overrides_for_builtin_materializations: false
+
 model-paths: ["models"]
 seed-paths: ["seeds"]
 test-paths: ["tests"]

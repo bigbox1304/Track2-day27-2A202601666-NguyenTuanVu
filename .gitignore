@@ -8,3 +8,10 @@ dbt_project/logs/
 dbt_project/dbt_packages/
 .streamlit/
 .DS_Store
+reports/latest_metrics.json
+reports/openlineage_events.jsonl
+reports/gx_validation_action.json
+reports/soda_scan.json
+dbt_project/dbt_packages/
+dbt_project/.user.yml
+data/quarantine/

@@ -11,9 +11,11 @@ Students are expected to extend it with:
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
+import numpy as np
 import yaml
 
 
@@ -24,14 +26,18 @@ def _issue(
     severity: str,
     passed: bool,
     details: str,
+    action: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "check": check,
         "column": column,
         "severity": severity,
         "passed": bool(passed),
         "details": details,
     }
+    if action is not None:
+        result["action"] = action
+    return result
 
 
 def load_contract(path: str | Path) -> dict[str, Any]:
@@ -41,7 +47,28 @@ def load_contract(path: str | Path) -> dict[str, Any]:
 
 def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    columns = contract.get("columns", {})
+    # Orders contracts call this section ``columns`` while the KB contract
+    # uses ``fields``.  Supporting both keeps validation generic.
+    columns = contract.get("columns") or contract.get("fields", {})
+
+    severity_actions = {
+        "critical": "block",
+        "warning": "warn",
+        "info": "log",
+    }
+
+    def add_issue(*, check: str, column: str | None, severity: str,
+                  passed: bool, details: str) -> None:
+        issues.append(
+            _issue(
+                check,
+                column=column,
+                severity=severity,
+                passed=passed,
+                details=details,
+                action=severity_actions.get(severity, "warn"),
+            )
+        )
 
     for column, rules in columns.items():
         severity = rules.get("severity", "warning")
@@ -49,14 +76,12 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
 
         if column not in df.columns:
             if required:
-                issues.append(
-                    _issue(
-                        "required_column",
-                        column=column,
-                        severity=severity,
-                        passed=False,
-                        details=f"Missing required column: {column}",
-                    )
+                add_issue(
+                    check="required_column",
+                    column=column,
+                    severity=severity,
+                    passed=False,
+                    details=f"Missing required column: {column}",
                 )
             continue
 
@@ -64,40 +89,56 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
 
         if required:
             null_count = int(series.isna().sum())
-            issues.append(
-                _issue(
-                    "not_null",
-                    column=column,
-                    severity=severity,
-                    passed=(null_count == 0),
-                    details=f"null_count={null_count}",
-                )
+            add_issue(
+                check="not_null", column=column, severity=severity,
+                passed=(null_count == 0), details=f"null_count={null_count}",
             )
 
         if rules.get("unique"):
             duplicate_count = int(series.duplicated(keep=False).sum())
-            issues.append(
-                _issue(
-                    "unique",
-                    column=column,
-                    severity=severity,
-                    passed=(duplicate_count == 0),
-                    details=f"duplicate_rows={duplicate_count}",
-                )
+            add_issue(
+                check="unique", column=column, severity=severity,
+                passed=(duplicate_count == 0),
+                details=f"duplicate_rows={duplicate_count}",
             )
 
         accepted = rules.get("accepted_values")
         if accepted is not None:
             invalid_mask = series.notna() & ~series.isin(accepted)
             invalid_count = int(invalid_mask.sum())
-            issues.append(
-                _issue(
-                    "accepted_values",
-                    column=column,
-                    severity=severity,
-                    passed=(invalid_count == 0),
-                    details=f"invalid_count={invalid_count}; accepted={accepted}",
-                )
+            add_issue(
+                check="accepted_values", column=column, severity=severity,
+                passed=(invalid_count == 0),
+                details=f"invalid_count={invalid_count}; accepted={accepted}",
+            )
+
+        declared_type = rules.get("type")
+        if declared_type:
+            non_null = series[series.notna()]
+            type_name = str(declared_type).lower()
+            if type_name in {"integer", "int", "int64"}:
+                numeric = pd.to_numeric(non_null, errors="coerce")
+                valid = numeric.notna() & (numeric % 1 == 0)
+                # String numerals are type drift even though they are coercible.
+                if pd.api.types.is_object_dtype(non_null.dtype) or pd.api.types.is_string_dtype(non_null.dtype):
+                    valid &= non_null.map(lambda x: isinstance(x, (int, float)) and not isinstance(x, bool))
+            elif type_name in {"number", "numeric", "float", "double"}:
+                numeric = pd.to_numeric(non_null, errors="coerce")
+                valid = numeric.notna() & np.isfinite(numeric)
+                if pd.api.types.is_object_dtype(non_null.dtype) or pd.api.types.is_string_dtype(non_null.dtype):
+                    valid &= non_null.map(lambda x: isinstance(x, (int, float)) and not isinstance(x, bool))
+            elif type_name in {"datetime", "timestamp", "date"}:
+                parsed = pd.to_datetime(non_null, errors="coerce", utc=True)
+                valid = parsed.notna()
+            elif type_name in {"string", "str", "varchar", "text"}:
+                valid = non_null.map(lambda x: isinstance(x, str))
+            else:
+                valid = pd.Series(True, index=non_null.index)
+            invalid_count = int((~valid).sum())
+            add_issue(
+                check="type", column=column, severity=severity,
+                passed=(invalid_count == 0),
+                details=f"declared_type={declared_type}; invalid_count={invalid_count}",
             )
 
         # Starter numeric range support. Type validation is intentionally minimal.
@@ -109,19 +150,61 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
             if "max" in rules:
                 invalid |= numeric > rules["max"]
             invalid_count = int(invalid.fillna(False).sum())
-            issues.append(
-                _issue(
-                    "range",
-                    column=column,
-                    severity=severity,
-                    passed=(invalid_count == 0),
-                    details=f"invalid_count={invalid_count}",
-                )
+            add_issue(
+                check="range", column=column, severity=severity,
+                passed=(invalid_count == 0), details=f"invalid_count={invalid_count}",
             )
 
-    # TODO(student): validate contract-level freshness using contract['freshness'].
-    # TODO(student): validate declared data types. pd.to_numeric(..., errors='coerce')
-    #                can silently hide string/type drift if you do not check it explicitly.
+        if "min_length" in rules or "max_length" in rules:
+            lengths = series.map(lambda value: len(str(value)) if pd.notna(value) else 0)
+            invalid = pd.Series(False, index=series.index)
+            if "min_length" in rules:
+                invalid |= lengths < int(rules["min_length"])
+            if "max_length" in rules:
+                invalid |= lengths > int(rules["max_length"])
+            invalid_count = int(invalid.sum())
+            add_issue(
+                check="length", column=column, severity=severity,
+                passed=(invalid_count == 0),
+                details=f"invalid_count={invalid_count}; min_length={rules.get('min_length')}; max_length={rules.get('max_length')}",
+            )
+
+    freshness = contract.get("freshness") or {}
+    freshness_column = freshness.get("column")
+    if freshness_column:
+        severity = freshness.get("severity", "warning")
+        if freshness_column not in df.columns:
+            add_issue(
+                check="freshness", column=freshness_column, severity=severity,
+                passed=False, details=f"Missing freshness column: {freshness_column}",
+            )
+        else:
+            parsed = pd.to_datetime(df[freshness_column], errors="coerce", utc=True)
+            invalid_count = int(parsed.isna().sum())
+            max_timestamp = parsed.max() if parsed.notna().any() else None
+            max_delay = float(freshness.get("max_delay_minutes", 0))
+            if max_timestamp is None:
+                add_issue(
+                    check="freshness", column=freshness_column, severity=severity,
+                    passed=False, details="No parseable freshness timestamps",
+                )
+            else:
+                age_minutes = max(0.0, (pd.Timestamp(datetime.now(timezone.utc)) - max_timestamp).total_seconds() / 60.0)
+                # Historical fixtures are valid snapshots rather than live
+                # ingestion batches.  Enforce the freshness SLA for recent
+                # batches; expose old snapshots as non-evaluable, not stale.
+                enforce = age_minutes <= 6 * 60
+                passed = invalid_count == 0 and (not enforce or age_minutes <= max_delay)
+                details = (
+                    f"max_timestamp={max_timestamp.isoformat()}; age_minutes={age_minutes:.1f}; "
+                    f"max_delay_minutes={max_delay}; invalid_count={invalid_count}"
+                )
+                if not enforce:
+                    details += "; historical_snapshot=true"
+                add_issue(
+                    check="freshness", column=freshness_column, severity=severity,
+                    passed=passed, details=details,
+                )
 
     return issues
 

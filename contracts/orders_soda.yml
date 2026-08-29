@@ -1,0 +1,12 @@
+# SodaCL data contract for the DuckDB orders seed.
+checks for main.orders:
+  - row_count > 0
+  - missing_count(order_id) = 0
+  - duplicate_count(order_id) = 0
+  - invalid_count(currency) = 0:
+      valid values: [USD, VND]
+  - invalid_count(status) = 0:
+      valid values: [pending, completed, refunded, cancelled]
+  - failed rows:
+      name: nonnegative_order_amount
+      fail condition: amount < 0

@@ -1,6 +1,6 @@
 PYTHON ?= python
 
-.PHONY: reset baseline tests gx dbt dashboard generate
+.PHONY: reset baseline tests gx soda dbt dashboard generate elementary
 
 reset:
 	$(PYTHON) scripts/reset_lab.py
@@ -14,9 +14,17 @@ tests:
 gx:
 	$(PYTHON) gx/validate_orders.py
 
+soda:
+	$(PYTHON) scripts/validate_soda.py
+
 dbt:
 	$(PYTHON) scripts/sync_dbt_seeds.py
+	dbt deps --project-dir dbt_project --profiles-dir dbt_project
 	dbt build --project-dir dbt_project --profiles-dir dbt_project
+
+elementary:
+	dbt deps --project-dir dbt_project
+	dbt build --project-dir dbt_project --profiles-dir dbt_project --select elementary
 
 dashboard:
 	streamlit run dashboard/app.py

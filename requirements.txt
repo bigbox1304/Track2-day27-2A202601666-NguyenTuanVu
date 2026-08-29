@@ -1,9 +1,11 @@
 pandas>=2.2,<3
 numpy>=2.0,<3
 PyYAML>=6,<7
-duckdb>=1.2,<2
+duckdb>=1.0,<1.1
 dbt-core>=1.9,<2
 dbt-duckdb>=1.9,<2
 great_expectations==1.21.0
 streamlit>=1.40,<2
 pytest>=8,<10
+soda-core==3.5.6
+soda-core-duckdb==3.5.6

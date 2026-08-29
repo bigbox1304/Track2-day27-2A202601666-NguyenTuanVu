@@ -29,9 +29,29 @@ def detect_text_length_shift(
 def detect_embedding_norm_shift(
     current_norms: Iterable[float], baseline_norms: Iterable[float]
 ) -> dict[str, Any]:
-    """TODO(student): implement embedding-space drift signal.
-
-    No embedding model is required for the starter lab. Hidden evaluation can
-    feed precomputed norms/similarities through this stable interface.
-    """
-    return {"is_anomaly": False, "score": 0.0, "method": "not_implemented"}
+    current = np.asarray(list(current_norms), dtype=float)
+    baseline = np.asarray(list(baseline_norms), dtype=float)
+    current = current[np.isfinite(current)]
+    baseline = baseline[np.isfinite(baseline)]
+    if current.size == 0 or baseline.size < 3:
+        return {
+            "is_anomaly": False,
+            "score": 0.0,
+            "method": "embedding_norm_zscore",
+            "reason": "insufficient_history_or_empty_input",
+        }
+    current_mean = float(np.mean(current))
+    baseline_mean = float(np.mean(baseline))
+    baseline_std = float(np.std(baseline))
+    if baseline_std == 0:
+        score = float("inf") if not np.isclose(current_mean, baseline_mean) else 0.0
+    else:
+        score = abs(current_mean - baseline_mean) / baseline_std
+    return {
+        "is_anomaly": bool(score > 3.0),
+        "score": float(score),
+        "method": "embedding_norm_zscore",
+        "reason": f"baseline_mean={baseline_mean:.4f}, current_mean={current_mean:.4f}, std={baseline_std:.4f}",
+        "baseline_mean": baseline_mean,
+        "current_mean": current_mean,
+    }

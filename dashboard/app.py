@@ -24,14 +24,23 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Orders rows", report["orders_rows"])
 c2.metric("Freshness (min)", f"{report['freshness_minutes']:.1f}")
 c3.metric("Contract failures", report["failed_contract_checks"])
-c4.metric("Critical failures", report["critical_contract_failures"])
+c4.metric("KB failures", report.get("kb_failed_checks", 0))
 
 st.subheader("Current signals")
 st.json({
     "row_count_anomaly": report["row_count_anomaly"],
     "kb_text_length_signal": report["kb_text_length_signal"],
     "contract_slo": report["contract_slo"],
+    "multiwindow_burn": report.get("multiwindow_burn", {}),
 })
+
+slo = report.get("contract_slo", {})
+st.subheader("SLO and error budget")
+s1, s2, s3, s4 = st.columns(4)
+s1.metric("Target", f"{slo.get('target', 0) * 100:.3f}%")
+s2.metric("Actual bad rate", f"{slo.get('actual_bad_rate', 0) * 100:.3f}%")
+s3.metric("Burn rate", f"{slo.get('burn_rate', 0):.2f}x")
+s4.metric("Remaining budget", f"{slo.get('remaining_error_budget_fraction', 0) * 100:.1f}%")
 
 history = pd.read_csv(HISTORY)
 st.subheader("Historical row count")
@@ -39,5 +48,7 @@ st.line_chart(history.set_index("date")[["row_count"]])
 
 st.subheader("Example blast radius")
 st.write("stg_orders -> " + " -> ".join(report["sample_blast_radius_from_stg_orders"]))
+if report.get("kb_blast_radius"):
+    st.write("kb_documents -> " + " -> ".join(report["kb_blast_radius"]))
 
-st.info("TODO: add SLO target, remaining error budget, burn-rate windows, owner/runbook links, and incident status.")
+st.info("Incident policy: critical contract failures block/quarantine; warning signals require investigation and owner acknowledgement.")
