@@ -71,3 +71,11 @@
 - Bằng chứng/test: public tests vẫn pass; phân phối `[1,2,3,4,5]` so với baseline hằng `[3,3,3,3,3]` bị phát hiện, còn hai batch giống nhau không bị báo anomaly.
 - Quyết định: chấp nhận, chờ chạy lại bộ hidden của giảng viên.
 - Lý do: detector không còn phụ thuộc riêng vào mean và có reason giải thích được tín hiệu drift.
+
+## Quyết định 10 — Cải thiện detector distribution cho H11
+
+- Giả thuyết: detector cần xử lý được shape drift và location drift theo kích thước mẫu, đặc biệt khi p-value của sample nhỏ không đủ sức phát hiện.
+- Đề xuất của agent: dùng KS critical threshold động, robust median/IQR và quantile distance trên 101 phân vị; không phụ thuộc riêng vào mean ratio hoặc p-value.
+- Bằng chứng/test: 10 public tests pass, `pip check` không có lỗi và extreme mean shift vẫn trả về anomaly.
+- Quyết định: chấp nhận, chờ chạy lại hidden test H11.
+- Lý do: cách tính mới phù hợp hơn với dữ liệu sample nhỏ và có reason giải thích rõ KS, location score, quantile shift cùng baseline/current mean.

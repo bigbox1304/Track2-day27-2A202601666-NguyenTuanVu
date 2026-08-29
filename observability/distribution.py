@@ -1,13 +1,9 @@
+"""Distribution shift and statistical drift detection."""
 from __future__ import annotations
 
 from typing import Any, Iterable
 
 import numpy as np
-
-try:
-    from scipy.stats import ks_2samp
-except ImportError:  # pragma: no cover - scipy is installed with the lab stack
-    ks_2samp = None
 
 
 def detect_distribution_shift(
@@ -16,59 +12,73 @@ def detect_distribution_shift(
     *,
     ratio_threshold: float = 3.0,
 ) -> dict[str, Any]:
-    """Detect shape, quantile and location drift.
+    """Detect location and shape drift using KS and robust quantile distance.
 
-    Mean-only checks miss important cases such as a wider distribution with the
-    same mean.  KS significance handles overall shape, while robust quantiles
-    handle small/constant samples where a p-value has little power.
+    The KS threshold is calculated from both sample sizes, which avoids making
+    small samples look healthy merely because an asymptotic p-value has low
+    power. Quantile distance and median/IQR effect size then provide a robust
+    signal for same-mean shape changes.
     """
-    cur = np.asarray(list(current_values), dtype=float)
-    base = np.asarray(list(baseline_values), dtype=float)
-    cur = cur[np.isfinite(cur)]
-    base = base[np.isfinite(base)]
-    if cur.size == 0 or base.size == 0:
-        return {"is_anomaly": False, "score": 0.0, "method": "ks", "reason": "empty_input"}
-    cur_mean = float(np.mean(cur))
-    base_mean = float(np.mean(base))
-    base_q = np.quantile(base, [0.10, 0.25, 0.50, 0.75, 0.90])
-    cur_q = np.quantile(cur, [0.10, 0.25, 0.50, 0.75, 0.90])
-    base_mad = float(np.median(np.abs(base - np.median(base))))
-    base_iqr = float(base_q[3] - base_q[1])
-    # Relative floor prevents a tiny numerical baseline from producing an
-    # infinite ratio while still making a meaningful constant-baseline shift
-    # visible.
-    scale = max(base_iqr, 1.4826 * base_mad, abs(base_mean) * 0.01, 1e-12)
-    quantile_score = float(np.median(np.abs(cur_q - base_q)) / scale)
-    location_score = float(abs(cur_mean - base_mean) / scale)
-    if abs(base_mean) <= scale:
-        ratio_score = float("inf") if abs(cur_mean - base_mean) > scale else 1.0
-    elif abs(cur_mean) <= scale:
-        ratio_score = float("inf")
-    else:
-        ratio_score = max(abs(cur_mean / base_mean), abs(base_mean / cur_mean))
-    combined = np.sort(np.concatenate([cur, base]))
-    cur_cdf = np.searchsorted(np.sort(cur), combined, side="right") / cur.size
-    base_cdf = np.searchsorted(np.sort(base), combined, side="right") / base.size
-    ks_score = float(np.max(np.abs(cur_cdf - base_cdf)))
-    if ks_2samp is not None:
-        ks_pvalue = float(ks_2samp(cur, base, alternative="two-sided", mode="auto").pvalue)
-    else:
-        ks_pvalue = 0.0 if ks_score >= 0.2 else 1.0
-    ks_anomaly = ks_score >= 0.2 and ks_pvalue < 0.05
-    is_anomaly = (
-        ratio_score >= ratio_threshold
-        or ks_anomaly
-        or quantile_score >= 1.5
-        or (location_score >= 3.0 and min(cur.size, base.size) >= 5)
+    current = np.asarray(list(current_values), dtype=float)
+    baseline = np.asarray(list(baseline_values), dtype=float)
+    current = current[np.isfinite(current)]
+    baseline = baseline[np.isfinite(baseline)]
+    if current.size == 0 or baseline.size == 0:
+        return {
+            "is_anomaly": False,
+            "score": 0.0,
+            "method": "ks_2sample",
+            "reason": "empty_or_nonfinite_input",
+        }
+
+    current_mean = float(np.mean(current))
+    baseline_mean = float(np.mean(baseline))
+
+    current_sorted = np.sort(current)
+    baseline_sorted = np.sort(baseline)
+    merged = np.sort(np.concatenate([current, baseline]))
+    current_cdf = np.searchsorted(current_sorted, merged, side="right") / current.size
+    baseline_cdf = np.searchsorted(baseline_sorted, merged, side="right") / baseline.size
+    ks_stat = float(np.max(np.abs(current_cdf - baseline_cdf)))
+
+    # Critical value for approximately alpha=0.01, capped to avoid an
+    # excessively permissive threshold for very small batches.
+    ks_critical = float(
+        1.63 * np.sqrt((current.size + baseline.size) / (current.size * baseline.size))
     )
-    combined_score = max(ks_score, quantile_score, location_score)
+    effective_threshold = min(0.75, ks_critical)
+    ks_normalized_score = (
+        ks_stat / effective_threshold if effective_threshold > 0 else 0.0
+    )
+
+    baseline_median = float(np.median(baseline))
+    baseline_q25, baseline_q75 = np.percentile(baseline, [25, 75])
+    baseline_iqr = float(baseline_q75 - baseline_q25)
+    scale = max(
+        baseline_iqr,
+        float(np.std(baseline)),
+        abs(baseline_median) * 0.05,
+        1e-9,
+    )
+    location_score = abs(float(np.median(current)) - baseline_median) / scale
+
+    quantiles = np.linspace(0.0, 1.0, 101)
+    quantile_shift = float(
+        np.mean(np.abs(np.quantile(current, quantiles) - np.quantile(baseline, quantiles)))
+        / scale
+    )
+
+    combined_score = max(ks_normalized_score, location_score / ratio_threshold)
+    shape_shifted = ks_stat >= effective_threshold and quantile_shift >= 1.0
+    location_shifted = location_score >= ratio_threshold
+    is_anomaly = bool(shape_shifted or location_shifted)
     return {
-        "is_anomaly": bool(is_anomaly),
+        "is_anomaly": is_anomaly,
         "score": float(combined_score),
-        "method": "ks+quantiles+mean_ratio",
+        "method": "ks_2sample+robust_location",
         "reason": (
-            f"ks={ks_score:.3f} (p={ks_pvalue:.4f}); quantile_shift={quantile_score:.3f}; "
-            f"location_shift={location_score:.3f}; baseline_mean={base_mean:.3f}; "
-            f"current_mean={cur_mean:.3f}; mean_ratio={ratio_score:.3f}"
+            f"ks={ks_stat:.4f}, ks_threshold={effective_threshold:.4f}, "
+            f"location_score={location_score:.4f}, quantile_shift={quantile_shift:.4f}, "
+            f"baseline_mean={baseline_mean:.3f}, current_mean={current_mean:.3f}"
         ),
     }
