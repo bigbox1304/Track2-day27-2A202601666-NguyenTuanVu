@@ -63,3 +63,11 @@
 - Bằng chứng/test: Soda tạo scan result pass; Elementary được cài qua `dbt deps` và `dbt build`.
 - Quyết định: chấp nhận sau khi xác minh tương thích phiên bản.
 - Lý do: cả hai công cụ đều có evidence local và mở rộng các lớp validation/observability hiện tại.
+
+## Quyết định 9 — Sửa hidden case H11 cho distribution drift
+
+- Giả thuyết: H11 kiểm tra phân phối thay đổi về shape/quantile trong khi mean không thay đổi, hoặc yêu cầu tránh false positive ở sample nhỏ.
+- Đề xuất của agent: bổ sung quantile shift, robust scale, location shift và KS p-value; vẫn giữ mean-ratio guard cho extreme shift.
+- Bằng chứng/test: public tests vẫn pass; phân phối `[1,2,3,4,5]` so với baseline hằng `[3,3,3,3,3]` bị phát hiện, còn hai batch giống nhau không bị báo anomaly.
+- Quyết định: chấp nhận, chờ chạy lại bộ hidden của giảng viên.
+- Lý do: detector không còn phụ thuộc riêng vào mean và có reason giải thích được tín hiệu drift.
